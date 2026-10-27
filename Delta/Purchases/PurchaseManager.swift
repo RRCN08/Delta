@@ -468,13 +468,13 @@ extension PurchaseManager
         // Experimental features are NEVER available in LEGACY version.
         return false
         #else
-
+        
         // Personal build (AGPLv3): Experimental Features unlocked without Patreon / Friend Zone.
         return true
-
+        
         #endif
     }
-
+    
     var supportsExperimentalFeatures: Bool {
         // As of Delta 2.0, we always support Experimental Features regardless of distribution method.
         return true
