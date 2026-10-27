@@ -23,8 +23,11 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_27.1.app
 
-      - name: Apply DeltaCore audio fix
-        run: git -C Cores/DeltaCore apply "$GITHUB_WORKSPACE/patches/deltacore-audio-fix.patch"
+      # Applied in order: the fix, then diagnostics logging (Settings → Advanced → Export Log).
+      - name: Apply DeltaCore patches
+        run: |
+          git -C Cores/DeltaCore apply "$GITHUB_WORKSPACE/patches/deltacore-audio-fix.patch"
+          git -C Cores/DeltaCore apply "$GITHUB_WORKSPACE/patches/deltacore-audio-diag.patch"
 
       - name: Archive
         run: |
@@ -43,12 +46,12 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Delta.xcarchive/Products/Applications/Delta.app Payload/
-          zip -qry Delta-2.0-audiofix.ipa Payload
+          zip -qry Delta-2.0-audiofix-diag.ipa Payload
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Delta-2.0-audiofix
-          path: Delta-2.0-audiofix.ipa
+          name: Delta-2.0-audiofix-diag
+          path: Delta-2.0-audiofix-diag.ipa
 
       - uses: actions/upload-artifact@v4
         if: failure()

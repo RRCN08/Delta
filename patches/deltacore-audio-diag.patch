@@ -1,0 +1,187 @@
+diff --git a/DeltaCore/Emulator Core/Audio/AudioManager.swift b/DeltaCore/Emulator Core/Audio/AudioManager.swift
+index eac5327..898f20b 100644
+--- a/DeltaCore/Emulator Core/Audio/AudioManager.swift	
++++ b/DeltaCore/Emulator Core/Audio/AudioManager.swift	
+@@ -7,6 +7,15 @@
+ //
+ 
+ import AVFoundation
++import UIKit
++import os.log
++
++// DIAG: audio diagnostics. Exported by Settings → Advanced → Export Log (subsystem com.rileytestut.Delta, category Audio).
++private let audioLog = OSLog(subsystem: "com.rileytestut.Delta", category: "Audio")
++private func diag(_ message: String) { os_log("%{public}@", log: audioLog, type: .default, message) }
++
++// ponytail: plain counters written on the render thread and read on main. Racy, fine for diagnostics only.
++private final class RenderStats { var calls = 0; var ok = 0; var noData = 0 }
+ 
+ internal extension AVAudioFormat
+ {
+@@ -92,9 +101,12 @@ public class AudioManager: NSObject, AudioRendering
+             catch
+             {
+                 print(error)
++                diag("isEnabled=\(self.isEnabled) error: \(error)")
+             }
+-            
++
+             self.audioBuffer.reset()
++
++            diag("isEnabled=\(self.isEnabled) → \(self.diagState)")
+         }
+     }
+     
+@@ -121,6 +133,9 @@ public class AudioManager: NSObject, AudioRendering
+     // Only reactivate the audio session between start() and stop(), so toggling isEnabled beforehand (e.g. game previews) can't interrupt other apps.
+     private var isStarted = false
+ 
++    private let renderStats = RenderStats()
++    private var diagHeartbeat: DispatchSourceTimer?
++
+     public private(set) var audioBuffer: RingBuffer
+     
+     public internal(set) var rate = 1.0 {
+@@ -242,6 +257,7 @@ public extension AudioManager
+         catch
+         {
+             print(error)
++            diag("start() session error: \(error)")
+         }
+         
+         self.resetAudioEngine()
+@@ -255,11 +271,37 @@ public extension AudioManager
+         NotificationCenter.default.addObserver(self, selector: #selector(AudioManager.updateOutputVolume), name: AVAudioSession.silenceSecondaryAudioHintNotification, object: nil)
+ 
+         self.isStarted = true
++        
++        for name in AudioManager.diagNotificationNames
++        {
++            NotificationCenter.default.addObserver(self, selector: #selector(AudioManager.logDiagNotification(_:)), name: name, object: nil)
++        }
++        
++        let heartbeat = DispatchSource.makeTimerSource(queue: .main)
++        heartbeat.schedule(deadline: .now() + 2, repeating: 2)
++        heartbeat.setEventHandler { [weak self] in
++            guard let self else { return }
++            diag("heartbeat → \(self.diagState)")
++            self.renderStats.calls = 0; self.renderStats.ok = 0; self.renderStats.noData = 0
++        }
++        heartbeat.resume()
++        self.diagHeartbeat = heartbeat
++        
++        diag("start() → \(self.diagState)")
+     }
+     
+     func stop()
+     {
+         self.isStarted = false
++        
++        diag("stop() → \(self.diagState)")
++        self.diagHeartbeat?.cancel()
++        self.diagHeartbeat = nil
++        
++        for name in AudioManager.diagNotificationNames
++        {
++            NotificationCenter.default.removeObserver(self, name: name, object: nil)
++        }
+ 
+         self.muteSwitchMonitor.stopMonitoring()
+         
+@@ -439,8 +481,11 @@ private extension AudioManager
+             catch
+             {
+                 print(error)
++                diag("resetAudioEngine() engine start error: \(error)")
+             }
+         }
++        
++        diag("resetAudioEngine() → \(self.diagState)")
+     }
+     
+     // Interrupt other audio if the user wants to pause it AND we won't be silent.
+@@ -469,6 +514,32 @@ private extension AudioManager
+         }
+     }
+ 
++    static let diagNotificationNames: [Notification.Name] = [
++        AVAudioSession.interruptionNotification,
++        AVAudioSession.routeChangeNotification,
++        AVAudioSession.silenceSecondaryAudioHintNotification,
++        AVAudioSession.mediaServicesWereLostNotification,
++        AVAudioSession.mediaServicesWereResetNotification,
++        .AVAudioEngineConfigurationChange,
++        UIApplication.willResignActiveNotification,
++        UIApplication.didEnterBackgroundNotification,
++        UIApplication.willEnterForegroundNotification,
++        UIApplication.didBecomeActiveNotification,
++    ]
++    
++    var diagState: String
++    {
++        let session = AVAudioSession.sharedInstance()
++        let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
++        return "enabled=\(self.isEnabled) started=\(self.isStarted) engineRunning=\(self.audioEngine.isRunning) vol=\(self.audioEngine.mainMixerNode.outputVolume) muted=\(self.isMuted) respectSilent=\(self.respectsSilentMode) mix=\(self.mixesWithOtherAudio) otherPlaying=\(session.isOtherAudioPlaying) silenceHint=\(session.secondaryAudioShouldBeSilencedHint) category=\(session.category.rawValue) options=\(session.categoryOptions.rawValue) sampleRate=\(session.sampleRate) outputs=\(outputs) buffered=\(self.audioBuffer.availableBytesForReading) render(calls/ok/noData)=\(self.renderStats.calls)/\(self.renderStats.ok)/\(self.renderStats.noData)"
++    }
++    
++    @objc func logDiagNotification(_ notification: Notification)
++    {
++        let info = (notification.userInfo ?? [:]).map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " ")
++        diag("\(notification.name.rawValue) [\(info)] → \(self.diagState)")
++    }
++    
+     @objc func handleAudioSessionInterruption(_ notification: Notification)
+     {
+         guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+@@ -524,6 +595,8 @@ private extension AudioManager
+                 self.audioEngine.mainMixerNode.outputVolume = 1.0
+             }
+         }
++        
++        diag("updateOutputVolume() → vol=\(self.audioEngine.mainMixerNode.outputVolume) otherPlaying=\(AVAudioSession.sharedInstance().isOtherAudioPlaying)")
+     }
+     
+     @available(iOS 13.0, *)
+@@ -536,9 +609,11 @@ private extension AudioManager
+         // so calculate sampleRateRatio now rather than later when needed 🤷‍♂️
+         let sampleRateRatio = (self.audioFormat.sampleRate / AVAudioSession.sharedInstance().sampleRate).rounded(.up)
+         
+-        let sourceNode = AVAudioSourceNode(format: self.audioFormat) { [audioFormat, audioBuffer] (_, _, frameCount, audioBufferList) -> OSStatus in
++        let sourceNode = AVAudioSourceNode(format: self.audioFormat) { [audioFormat, audioBuffer, renderStats] (_, _, frameCount, audioBufferList) -> OSStatus in
+             defer { previousSampleCount = audioBuffer.availableBytesForReading }
+             
++            renderStats.calls += 1
++            
+             let unsafeAudioBufferList = UnsafeMutableAudioBufferListPointer(audioBufferList)
+             guard let buffer = unsafeAudioBufferList[0].mData else { return kAudioFileStreamError_UnspecifiedError }
+             
+@@ -548,7 +623,7 @@ private extension AudioManager
+             {
+                 // Make sure audio buffer has enough initial samples to prevent audio distortion.
+                 
+-                guard audioBuffer.availableBytesForReading >= requestedBytes * Int(sampleRateRatio) else { return kAudioFileStreamError_DataUnavailable }
++                guard audioBuffer.availableBytesForReading >= requestedBytes * Int(sampleRateRatio) else { renderStats.noData += 1; return kAudioFileStreamError_DataUnavailable }
+                 isPrimed = true
+             }
+             
+@@ -557,17 +632,18 @@ private extension AudioManager
+                 // Audio buffer has been reset, so we need to prime it again.
+                 
+                 isPrimed = false
+-                return kAudioFileStreamError_DataUnavailable
++                renderStats.noData += 1; return kAudioFileStreamError_DataUnavailable
+             }
+             
+             guard audioBuffer.availableBytesForReading >= requestedBytes else {
+                 isPrimed = false
+-                return kAudioFileStreamError_DataUnavailable
++                renderStats.noData += 1; return kAudioFileStreamError_DataUnavailable
+             }
+                         
+             let readBytes = audioBuffer.read(into: buffer, preferredSize: requestedBytes)
+             unsafeAudioBufferList[0].mDataByteSize = UInt32(readBytes)
+             
++            renderStats.ok += 1
+             return noErr
+         }
+         
