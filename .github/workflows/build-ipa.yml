@@ -7,9 +7,10 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 90
 
+    # Delta 2.0 uses iOS 27 SDK APIs (UIHinge, AVAudioSession messages), so it needs Xcode 27.
     steps:
       # Submodules use git@github.com: URLs; the runner has no SSH key.
       - name: Fetch submodules over HTTPS
@@ -20,15 +21,7 @@ jobs:
           submodules: recursive
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.6.app
-
-      # AppIcon.icon was re-saved for Xcode 27 (a470d6b3); runners top out at Xcode 26.6, whose actool can't open it.
-      # Use the version from just before that commit. Only changes how the app icon looks.
-      - name: Use Xcode 26 app icon
-        run: |
-          git fetch --depth 1 origin bc3d77b1d7d012a2670dca95a9a2b3c2dbf5677d
-          rm -rf Resources/AppIcon.icon
-          git checkout bc3d77b1d7d012a2670dca95a9a2b3c2dbf5677d -- Resources/AppIcon.icon
+        run: sudo xcode-select -s /Applications/Xcode_27.1.app
 
       - name: Apply DeltaCore audio fix
         run: git -C Cores/DeltaCore apply "$GITHUB_WORKSPACE/patches/deltacore-audio-fix.patch"
