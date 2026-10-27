@@ -1,0 +1,87 @@
+diff --git a/DeltaCore/Emulator Core/Audio/AudioManager.swift b/DeltaCore/Emulator Core/Audio/AudioManager.swift
+index 0448cc3..eac5327 100644
+--- a/DeltaCore/Emulator Core/Audio/AudioManager.swift	
++++ b/DeltaCore/Emulator Core/Audio/AudioManager.swift	
+@@ -71,7 +71,18 @@ public class AudioManager: NSObject, AudioRendering
+             {
+                 if self.isEnabled
+                 {
++                    if self.isStarted
++                    {
++                        // Another app may have taken the audio session while we were paused (e.g. after switching apps), so reclaim it before restarting the engine.
++                        try AVAudioSession.sharedInstance().setActive(true)
++                    }
++
+                     try self.audioEngine.start()
++
++                    // ponytail: fixed 1s re-check. The app we just left may still report isOtherAudioPlaying while it winds down, which would otherwise leave us muted until the next pause/resume.
++                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
++                        self?.updateOutputVolume()
++                    }
+                 }
+                 else
+                 {
+@@ -107,6 +118,9 @@ public class AudioManager: NSObject, AudioRendering
+         }
+     }
+ 
++    // Only reactivate the audio session between start() and stop(), so toggling isEnabled beforehand (e.g. game previews) can't interrupt other apps.
++    private var isStarted = false
++
+     public private(set) var audioBuffer: RingBuffer
+     
+     public internal(set) var rate = 1.0 {
+@@ -235,15 +249,25 @@ public extension AudioManager
+         // Register after the reset above, so our own setup doesn't immediately trigger another one.
+         NotificationCenter.default.addObserver(self, selector: #selector(AudioManager.resetAudioEngine), name: .AVAudioEngineConfigurationChange, object: nil)
+         NotificationCenter.default.addObserver(self, selector: #selector(AudioManager.resetAudioEngine), name: AVAudioSession.routeChangeNotification, object: nil)
++        NotificationCenter.default.addObserver(self, selector: #selector(AudioManager.handleAudioSessionInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
++
++        // Re-evaluate the "another app is playing" mute when that other audio stops.
++        NotificationCenter.default.addObserver(self, selector: #selector(AudioManager.updateOutputVolume), name: AVAudioSession.silenceSecondaryAudioHintNotification, object: nil)
++
++        self.isStarted = true
+     }
+     
+     func stop()
+     {
++        self.isStarted = false
++
+         self.muteSwitchMonitor.stopMonitoring()
+         
+         // Remove observers before deactivating — otherwise deactivation could trigger a reset, which would undo setActive(false) below.
+         NotificationCenter.default.removeObserver(self, name: .AVAudioEngineConfigurationChange, object: nil)
+         NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
++        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
++        NotificationCenter.default.removeObserver(self, name: AVAudioSession.silenceSecondaryAudioHintNotification, object: nil)
+ 
+         self.renderingQueue.sync {
+             self.audioPlayerNode.stop()
+@@ -445,6 +469,27 @@ private extension AudioManager
+         }
+     }
+ 
++    @objc func handleAudioSessionInterruption(_ notification: Notification)
++    {
++        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
++              AVAudioSession.InterruptionType(rawValue: rawType) == .ended,
++              self.isEnabled
++        else { return }
++
++        // The system deactivated our session for the interruption; reactivate and restart the engine (resetAudioEngine() restarts it).
++        do
++        {
++            try AVAudioSession.sharedInstance().setActive(true)
++        }
++        catch
++        {
++            print(error)
++        }
++
++        self.resetAudioEngine()
++        self.updateOutputVolume()
++    }
++
+     @objc func updateOutputVolume()
+     {
+         if !self.isEnabled
