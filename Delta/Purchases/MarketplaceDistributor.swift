@@ -6,7 +6,7 @@
 //  Copyright © 2026 Riley Testut. All rights reserved.
 //
 
-import MarketplaceKit
+@_weakLinked import MarketplaceKit
 
 // Our version of AppDistributor we can freely conform to protocols
 enum MarketplaceDistributor: Hashable

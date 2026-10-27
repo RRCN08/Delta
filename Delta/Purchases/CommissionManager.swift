@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import MarketplaceKit
+@_weakLinked import MarketplaceKit
 import StoreKit
 
 extension CommissionManager

@@ -8,7 +8,7 @@
 
 import Foundation
 import StoreKit
-import MarketplaceKit
+@_weakLinked import MarketplaceKit
 import SwiftUI
 import DeclaredAgeRange
 
@@ -126,14 +126,18 @@ class PurchaseManager
         
         #else
         
-        do
+        // MarketplaceKit doesn't exist on macOS (weak-linked), so skip it when running on a Mac.
+        if !ProcessInfo.processInfo.isMacCatalystApp
         {
-            let appDistributor = try await AppDistributor.current
-            self.distributor = MarketplaceDistributor(appDistributor)
-        }
-        catch
-        {
-            Logger.main.error("Failed to determine AppDistributor. \(error.localizedDescription, privacy: .public)")
+            do
+            {
+                let appDistributor = try await AppDistributor.current
+                self.distributor = MarketplaceDistributor(appDistributor)
+            }
+            catch
+            {
+                Logger.main.error("Failed to determine AppDistributor. \(error.localizedDescription, privacy: .public)")
+            }
         }
         
         #endif
@@ -203,7 +207,7 @@ class PurchaseManager
             }
         }
         
-        if #available(iOS 26.4, *)
+        if #available(iOS 26.4, *), !ProcessInfo.processInfo.isMacCatalystApp
         {
             self.commissionRegion = await AppDistributor.eligibilityRegion
         }
